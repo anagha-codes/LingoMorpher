@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lingo Morpher</title>
+    <!-- Tailwind CSS CDN for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts - Inter for a modern look (for general text) -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <!-- Google Fonts - Cinzel Decorative for splash screen/special headings -->
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@400;700;900&display=swap" rel="stylesheet">
+    <!-- React and ReactDOM CDNs -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel for JSX transformation in the browser -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        /* Custom font family for the entire body */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Ensure the root div takes full height */
+        #root {
+            min-height: 100vh;
+            display: flex;
+            /* Changed to flex-col on small screens, row on larger */
+            flex-direction: column;
+            background-color: #f3f4f6; /* Light gray background */
+        }
+        @media (min-width: 640px) { /* Tailwind's sm breakpoint */
+            #root {
+                flex-direction: row;
+            }
+        }
+        /* Style for the range input slider */
+        input[type="range"] {
+            -webkit-appearance: none; /* Hides the slider track in Chrome/Safari */
+            width: 100%; /* Full-width */
+            height: 8px; /* Specify a height */
+            background: #d3d3d3; /* Grey background */
+            outline: none; /* Remove outline */
+            opacity: 0.7; /* Set transparency (for hover effect) */
+            -webkit-transition: .2s; /* 0.2 seconds transition on hover */
+            transition: opacity .2s;
+            border-radius: 4px;
+        }
+
+        /* Mouse-over effects */
+        input[type="range"]:hover {
+            opacity: 1; /* Fully shown on mouse-over */
+        }
+
+        /* The slider handle (thumb) */
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none; /* Hides the slider handle in Chrome/Safari */
+            appearance: none;
+            width: 20px; /* Set a specific slider handle width */
+            height: 20px; /* Slider handle height */
+            background: #2563eb; /* Blue background */
+            cursor: pointer; /* Cursor on hover */
+            border-radius: 50%; /* Make it circular */
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+
+        input[type="range"]::-moz-range-thumb {
+            width: 20px; /* Set a specific slider handle width */
+            height: 20px; /* Slider handle height */
+            background: #2563eb; /* Blue background */
+            cursor: pointer; /* Cursor on hover */
+            border-radius: 50%; /* Make it circular */
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+
+        /* NEW: Fade-in animation for splash screen */
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        .fade-in-animation {
+            animation: fadeIn 2s ease-in-out forwards; /* 2 seconds duration, stays at end state */
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // LanguageTranslator Component: Handles language translation functionality
+
+        // --- Voice Input Function ---
+        const startVoiceInput = (setSourceText) => {
+            const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+            recognition.lang = 'en-US';
+            recognition.interimResults = false;
+            recognition.maxAlternatives = 1;
+            recognition.onresult = (event) => {
+                const speechResult = event.results[0][0].transcript;
+                setSourceText(prev => prev + (prev ? ' ' : '') + speechResult);
+            };
+            recognition.onerror = (event) => {
+                alert('Speech recognition error: ' + event.error);
+            };
+            recognition.start();
+        };
+
+        // --- Text-to-Speech Function ---
+        const speakText = (text) => {
+            const synth = window.speechSynthesis;
+            const utter = new SpeechSynthesisUtterance(text);
+            utter.lang = 'en-IN'; // Choose appropriate language here
+            synth.speak(utter);
+        };
+    
+        const LanguageTranslator = () => {
+            const [sourceText, setSourceText] = React.useState('');
+            const [translatedText, setTranslatedText] = React.useState('');
+            const [sourceLang, setSourceLang] = React.useState('en'); // Default source language
+            const [targetLang, setTargetLang] = React.useState('ta'); // Default target language
+            const [isLoading, setIsLoading] = React.useState(false); // Own loading state
+            const [error, setError] = React.useState(''); // Own error state
+            const [history, setHistory] = React.useState([]); // History state for Language Translator
+
+            /**
+             * Handles the translation process by calling the Gemini API.
+             * Includes exponential backoff for robust API calls.
+             */
+            const handleTranslate = async () => {
+                setIsLoading(true); // Set loading state to true
+                setError(''); // Clear any previous errors
+                setTranslatedText(''); // Clear previous translation
+
+                if (!sourceText.trim()) {
+                    setError('Please enter text to translate.');
+                    setIsLoading(false);
+                    return;
+                }
+
+                // Construct the prompt for the Gemini model
+                const langMap = {
+                    'en': 'English',
+                    'ta': 'Tamil',
+                    'hi': 'Hindi'
+                };
+                const prompt = `Translate the following text from ${langMap[sourceLang]} to ${langMap[targetLang]}:\n\n${sourceText}`;
+                let chatHistory = [{ role: "user", parts: [{ text: prompt }] }];
+
+                const payload = { contents: chatHistory };
+                // --- IMPORTANT: Your Google Cloud API Key for local testing ---
+                const apiKey = "AIzaSyA3uewnpVjG2dxwCgCNEyNBGeqk8cJP0ho";
+                // --- END IMPORTANT ---
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+
+                let retries = 0;
+                const maxRetries = 5;
+                const baseDelay = 1000; // 1 second initial delay for exponential backoff
+
+                // Loop with exponential backoff for API retries
+                while (retries < maxRetries) {
+                    try {
+                        const response = await fetch(apiUrl, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+
+                        if (!response.ok) {
+                            // If response is not OK, throw an error to trigger retry
+                            throw new Error(`HTTP error! status: ${response.status}`);
+                        }
+
+                        const result = await response.json();
+
+                        // Check if the response contains valid content
+                        if (result.candidates && result.candidates.length > 0 &&
+                            result.candidates[0].content && result.candidates[0].content.parts &&
+                            result.candidates[0].content.parts.length > 0) {
+                            const text = result.candidates[0].content.parts[0].text;
+                            if (text && text.trim().length > 0) {
+                                setTranslatedText(text); // Set the translated text
+                                // Add to history
+                                setHistory(prevHistory => [{
+                                    input: sourceText,
+                                    output: text,
+                                    sourceLang: langMap[sourceLang],
+                                    targetLang: langMap[targetLang]
+                                }, ...prevHistory].slice(0, 4)); // Keep only last 4
+                                break; // Exit loop on successful translation
+                            } else {
+                                setError('Translation resulted in empty text. Please try a different input or language pair.');
+                                break; // Exit loop if text is empty
+                            }
+                        } else {
+                            setError('Failed to get a valid translation from the model. Response structure unexpected.');
+                            break; // Exit loop if response structure is unexpected
+                        }
+                    } catch (e) {
+                        retries++;
+                        if (retries < maxRetries) {
+                            const delay = baseDelay * Math.pow(2, retries - 1); // Calculate exponential delay
+                            await new Promise(res => setTimeout(res, delay)); // Wait before retrying
+                        } else {
+                            setError(`Error translating text after multiple retries: ${e.message}. Please try again later.`); // Set error after max retries
+                        }
+                    }
+                }
+                setIsLoading(false); // Set loading state to false
+            };
+
+            return (
+                <div className="p-6 sm:p-8 rounded-xl shadow-lg w-full max-w-4xl border border-gray-200 bg-white">
+                    <h2 className="text-3xl sm:text-4xl font-extrabold text-center text-gray-800 mb-6 font-inter">
+                        Language Translator
+                    </h2>
+                    <p className="text-center text-gray-600 mb-8 font-inter">
+                        Translate text between English, Tamil, and Hindi.
+                    </p>
+
+                    {/* Language Selection Dropdowns */}
+                    <div className="flex flex-col sm:flex-row justify-between items-center mb-6 space-y-4 sm:space-y-0 sm:space-x-4">
+                        <div className="w-full sm:w-1/2">
+                            <label htmlFor="sourceLang" className="block text-lg font-medium text-gray-700 mb-2 font-inter">
+                                Source Language:
+                            </label>
+                            <select
+                                id="sourceLang"
+                                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition duration-200 ease-in-out bg-white font-inter"
+                                value={sourceLang}
+                                onChange={(e) => setSourceLang(e.target.value)}
+                            >
+                                <option value="en">English</option>
+                                <option value="ta">Tamil</option>
+                                <option value="hi">Hindi</option>
+                            </select>
+                        </div>
+                        <div className="w-full sm:w-1/2">
+                            <label htmlFor="targetLang" className="block text-lg font-medium text-gray-700 mb-2 font-inter">
+                                Target Language:
+                            </label>
+                            <select
+                                id="targetLang"
+                                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition duration-200 ease-in-out bg-white font-inter"
+                                value={targetLang}
+                                onChange={(e) => setTargetLang(e.target.value)}
+                            >
+                                <option value="en">English</option>
+                                <option value="ta">Tamil</option>
+                                <option value="hi">Hindi</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    {/* Input Text Area for Translation */}
+                    <div className="mb-6">
+                        <label htmlFor="sourceText" className="block text-lg font-medium text-gray-700 mb-2 font-inter">
+                            Text to Translate:
+                        </label>
+                        <textarea
+                            id="sourceText"
+                            className="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition duration-200 ease-in-out resize-y min-h-[120px] font-inter"
+                            placeholder="Enter text to translate..."
+                            value={sourceText}
+                            onChange={(e) => setSourceText(e.target.value)}
+                            rows="6"
+                        ></textarea>
+                    </div>
+
+                    {/* Translate Button + Voice Input + Listen Output */}
+                    <div className="flex flex-col sm:flex-row justify-center items-center gap-4 mb-8">
+                        <button
+                            onClick={() => startVoiceInput(setSourceText)}
+                            className="px-4 py-2 bg-yellow-500 text-white font-semibold rounded-md hover:bg-yellow-600 transition duration-300 ease-in-out font-inter"
+                        >
+                            🎙️ Speak
+                        </button>
+                        <button
+                            onClick={handleTranslate}
+                            className="px-6 py-3 bg-green-600 text-white font-semibold rounded-lg shadow-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 transition duration-300 ease-in-out transform hover:scale-105 font-inter"
+                            disabled={isLoading || !sourceText.trim()}
+                        >
+                            {isLoading ? (
+                                <span className="flex items-center justify-center">
+                                    <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                    Translating...
+                                </span>
+                            ) : (
+                                'Translate Text'
+                            )}
+                        </button>
+                        {translatedText && (
+                            <button
+                                onClick={() => speakText(translatedText)}
+                                className="px-4 py-2 bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700 transition duration-300 ease-in-out font-inter"
+                            >
+                                🔊 Listen
+                            </button>
+                        )}
+                    </div>
+                    <div className="text-center mb-8">
+                        <button
+                            onClick={handleTranslate}
+                            className="w-full sm:w-auto px-6 py-3 bg-green-600 text-white font-semibold rounded-lg shadow-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 transition duration-300 ease-in-out transform hover:scale-105 font-inter"
+                            disabled={isLoading || !sourceText.trim()} // Disable if loading or input is empty
+                        >
+                            {isLoading ? (
+                                <span className="flex items-center justify-center">
+                                    <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                    Translating...
+                                </span>
+                            ) : (
+                                'Translate Text'
+                            )}
+                        </button>
+                    </div>
+
+                    {/* Error Display */}
+                    {error && (
+                        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg relative mb-6 font-inter" role="alert">
+                            <strong className="font-bold">Error!</strong>
+                            <span className="block sm:inline ml-2">{error}</span>
+                        </div>
+                    )}
+
+                    {/* Translated Output Display */}
+                    {translatedText && (
+                        <div className="bg-gray-50 p-4 sm:p-6 rounded-lg border border-gray-200">
+                            <h2 className="text-xl sm:text-2xl font-bold text-gray-800 mb-4 font-inter">
+                                Translated Text:
+                            </h2>
+                            <div className="whitespace-pre-wrap text-gray-800 leading-relaxed font-inter">
+                                {translatedText}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Language Translator History Section - ALWAYS VISIBLE */}
+                    <div className="mt-8 pt-6 border-t border-gray-200">
+                        <h3 className="text-xl font-bold text-gray-800 mb-4 font-inter flex justify-between items-center">
+                            Recent Translations
+                            <button
+                                onClick={() => setHistory([])}
+                                className="text-sm text-red-600 hover:text-red-800 font-semibold"
+                            >
+                                Clear History
+                            </button>
+                        </h3>
+                        {history.length > 0 ? (
+                            <div className="space-y-4">
+                                {history.map((entry, index) => (
+                                    <div key={index} className="bg-white p-4 rounded-lg shadow-sm border border-gray-100">
+                                        <p className="text-sm text-gray-500 font-medium mb-2">
+                                            <span className="font-semibold">{entry.sourceLang}</span> to <span className="font-semibold">{entry.targetLang}</span>
+                                        </p>
+                                        <p className="text-gray-700 mb-1">
+                                            <span className="font-semibold">Input:</span> {entry.input.substring(0, 100)}{entry.input.length > 100 ? '...' : ''}
+                                        </p>
+                                        <p className="text-gray-800">
+                                            <span className="font-semibold">Output:</span> {entry.output.substring(0, 100)}{entry.output.length > 100 ? '...' : ''}
+                                        </p>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <p className="text-gray-500 text-center italic font-inter">No recent translations.</p>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        // ToneAdjuster Component: Handles tone adjustment functionality
+        const ToneAdjuster = () => {
+            const [inputText, setInputText] = React.useState('');
+            const [adjustedText, setAdjustedText] = React.useState('');
+            const [toneLevel, setToneLevel] = React.useState(5); // 0 (Very Casual) to 10 (Very Formal)
+            const [isLoading, setIsLoading] = React.useState(false);
+            const [error, setError] = React.useState('');
+            const [history, setHistory] = React.useState([]); // History state for Tone Adjuster
+
+            /**
+             * Handles the tone adjustment process by calling the Gemini API.
+             * Includes exponential backoff for robust API calls.
+             */
+            const handleAdjustTone = async () => {
+                setIsLoading(true);
+                setError('');
+                setAdjustedText('');
+
+                if (!inputText.trim()) {
+                    setError('Please enter text to adjust its tone.');
+                    setIsLoading(false);
+                    return;
+                }
+
+                let toneDescription = '';
+                if (toneLevel >= 0 && toneLevel <= 2) {
+                    toneDescription = 'a very casual and informal tone';
+                } else if (toneLevel >= 3 && toneLevel <= 4) {
+                    toneDescription = 'a casual tone';
+                } else if (toneLevel === 5) {
+                    toneDescription = 'a neutral tone';
+                } else if (toneLevel >= 6 && toneLevel <= 7) {
+                    toneDescription = 'a formal tone';
+                } else if (toneLevel >= 8 && toneLevel <= 10) {
+                    toneDescription = 'a very formal tone';
+                }
+
+                const prompt = `Rewrite the following text in ${toneDescription}, maintaining its original meaning:\n\n${inputText}`;
+                let chatHistory = [{ role: "user", parts: [{ text: prompt }] }];
+
+                const payload = { contents: chatHistory };
+                // --- IMPORTANT: Your Google Cloud API Key for local testing ---
+                const apiKey = "AIzaSyA3uewnpVjG2dxwCgCNEyNBGeqk8cJP0ho";
+                // --- END IMPORTANT ---
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+
+                let retries = 0;
+                const maxRetries = 5;
+                const baseDelay = 1000;
+
+                while (retries < maxRetries) {
+                    try {
+                        const response = await fetch(apiUrl, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+
+                        if (!response.ok) {
+                            throw new Error(`HTTP error! status: ${response.status}`);
+                        }
+
+                        const result = await response.json();
+
+                        if (result.candidates && result.candidates.length > 0 &&
+                            result.candidates[0].content && result.candidates[0].content.parts &&
+                            result.candidates[0].content.parts.length > 0) {
+                            const text = result.candidates[0].content.parts[0].text;
+                            if (text && text.trim().length > 0) {
+                                setAdjustedText(text);
+                                // Add to history
+                                setHistory(prevHistory => [{
+                                    input: inputText,
+                                    output: text,
+                                    tone: toneDescription
+                                }, ...prevHistory].slice(0, 4)); // Keep only last 4
+                                break;
+                            } else {
+                                setError('Tone adjustment resulted in empty text. Please try a different input.');
+                                break;
+                            }
+                        } else {
+                            setError('Failed to get a valid response from the model for tone adjustment. Response structure unexpected.');
+                            break;
+                        }
+                    } catch (e) {
+                        retries++;
+                        if (retries < maxRetries) {
+                            const delay = baseDelay * Math.pow(2, retries - 1);
+                            await new Promise(res => setTimeout(res, delay));
+                        } else {
+                            setError(`Error adjusting tone after multiple retries: ${e.message}. Please try again later.`);
+                        }
+                    }
+                }
+                setIsLoading(false);
+            };
+
+            return (
+                <div className="p-6 sm:p-8 rounded-xl shadow-lg w-full max-w-4xl border border-gray-200 bg-white">
+                    <h2 className="text-3xl sm:text-4xl font-extrabold text-center text-gray-800 mb-6 font-inter">
+                        Tone Adjuster
+                    </h2>
+                    <p className="text-center text-gray-600 mb-8 font-inter">
+                        Adjust the formality or casualness of your text using the slider below!
+                    </p>
+
+                    {/* Input Section */}
+                    <div className="mb-6">
+                        <label htmlFor="toneInputText" className="block text-lg font-medium text-gray-700 mb-2 font-inter">
+                            Your Text:
+                        </label>
+                        <textarea
+                            id="toneInputText"
+                            className="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition duration-200 ease-in-out resize-y min-h-[120px] font-inter"
+                            placeholder="Type or paste your text here..."
+                            value={inputText}
+                            onChange={(e) => setInputText(e.target.value)}
+                            rows="6"
+                        ></textarea>
+                    </div>
+
+                    {/* Tone Slider */}
+                    <div className="mb-8">
+                        <label htmlFor="toneLevel" className="block text-lg font-medium text-gray-700 mb-4 font-inter">
+                            Tone Level: <span className="font-bold text-blue-600">{toneLevel}</span>
+                        </label>
+                        <input
+                            type="range"
+                            id="toneLevel"
+                            min="0"
+                            max="10"
+                            value={toneLevel}
+                            onChange={(e) => setToneLevel(parseInt(e.target.value))}
+                            className="w-full"
+                        />
+                        <div className="flex justify-between text-sm text-gray-600 mt-2 font-inter">
+                            <span>Very Casual (0)</span>
+                            <span>Neutral (5)</span>
+                            <span>Very Formal (10)</span>
+                        </div>
+                    </div>
+
+                    {/* Adjust Tone Button */}
+                    <div className="text-center mb-8">
+                        <button
+                            onClick={handleAdjustTone}
+                            className="w-full sm:w-auto px-6 py-3 bg-purple-600 text-white font-semibold rounded-lg shadow-md hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 transition duration-300 ease-in-out transform hover:scale-105 font-inter"
+                            disabled={isLoading || !inputText.trim()}
+                        >
+                            {isLoading ? (
+                                <span className="flex items-center justify-center">
+                                    <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                    Adjusting Tone...
+                                </span>
+                            ) : (
+                                'Adjust Tone'
+                            )}
+                        </button>
+                    </div>
+
+                    {/* Error Display */}
+                    {error && (
+                        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg relative mb-6 font-inter" role="alert">
+                            <strong className="font-bold">Error!</strong>
+                            <span className="block sm:inline ml-2">{error}</span>
+                        </div>
+                    )}
+
+                    {/* Adjusted Output Display */}
+                    {adjustedText && (
+                        <div className="bg-gray-50 p-4 sm:p-6 rounded-lg border border-gray-200">
+                            <h2 className="text-xl sm:text-2xl font-bold text-gray-800 mb-4 font-inter">
+                                Adjusted Text:
+                            </h2>
+                            <div className="whitespace-pre-wrap text-gray-800 leading-relaxed font-inter">
+                                {adjustedText}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Tone Adjuster History Section - ALWAYS VISIBLE */}
+                    <div className="mt-8 pt-6 border-t border-gray-200">
+                        <h3 className="text-xl font-bold text-gray-800 mb-4 font-inter flex justify-between items-center">
+                            Recent Tone Adjustments
+                            <button
+                                onClick={() => setHistory([])}
+                                className="text-sm text-red-600 hover:text-red-800 font-semibold"
+                            >
+                                Clear History
+                            </button>
+                        </h3>
+                        {history.length > 0 ? (
+                            <div className="space-y-4">
+                                {history.map((entry, index) => (
+                                    <div key={index} className="bg-white p-4 rounded-lg shadow-sm border border-gray-100">
+                                        <p className="text-sm text-gray-500 font-medium mb-2">
+                                            <span className="font-semibold">Tone:</span> {entry.tone}
+                                        </p>
+                                        <p className="text-gray-700 mb-1">
+                                            <span className="font-semibold">Input:</span> {entry.input.substring(0, 100)}{entry.input.length > 100 ? '...' : ''}
+                                        </p>
+                                        <p className="text-gray-800">
+                                            <span className="font-semibold">Output:</span> {entry.output.substring(0, 100)}{entry.output.length > 100 ? '...' : ''}
+                                        </p>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <p className="text-gray-500 text-center italic font-inter">No recent tone adjustments.</p>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        // NEW: SplashScreen Component
+        const SplashScreen = ({ onAnimationEnd }) => {
+            return (
+                <div className="fixed inset-0 bg-gray-900 flex items-center justify-center z-50">
+                    <h1
+                        className="text-6xl sm:text-8xl font-extrabold text-white fade-in-animation"
+                        style={{ fontFamily: "'Cinzel Decorative', serif" }} // Apply custom font
+                        onAnimationEnd={onAnimationEnd}
+                    >
+                        Lingo Morpher
+                    </h1>
+                </div>
+            );
+        };
+
+        // Main App component: Manages overall layout and switches between sub-components
+        const App = () => {
+            // State to control which tab is active: 'creative', 'language', or 'tone'
+            const [activeTab, setActiveTab] = React.useState('creative');
+            // NEW: State to control splash screen visibility
+            const [showSplash, setShowSplash] = React.useState(true);
+
+            // Hide splash screen after a delay
+            React.useEffect(() => {
+                const timer = setTimeout(() => {
+                    setShowSplash(false);
+                }, 15000); // Show splash for 15 seconds
+                return () => clearTimeout(timer); // Cleanup timer
+            }, []);
+
+            // States for Creative Translator (these were already in your original App component)
+            const [inputText, setInputText] = React.useState('');
+            const [outputStyle, setOutputStyle] = React.useState('poem');
+            const [outputText, setOutputText] = React.useState('');
+            const [isLoadingCreative, setIsLoadingCreative] = React.useState(false); // Specific loading for creative
+            const [errorCreative, setErrorCreative] = React.useState(''); // Specific error for creative
+            const [creativeHistory, setCreativeHistory] = React.useState([]); // History state for Creative Translator
+
+            /**
+             * Function to handle the transformation of text style using the Gemini API.
+             * It constructs a prompt based on the selected style and sends it to the LLM.
+             */
+            const handleCreativeTransform = async () => {
+                setIsLoadingCreative(true); // Set loading to true
+                setErrorCreative(''); // Clear any previous errors
+                setOutputText(''); // Clear previous output
+
+                // Calculate word count for validation
+                const wordCount = inputText.trim().split(/\s+/).filter(word => word.length > 0).length;
+
+                // Define the base prompt for the LLM and apply word count validation
+                let prompt = '';
+                let isValidInput = true;
+                let errorMessage = '';
+
+                if (outputStyle === 'poem') {
+                    prompt = `Transform the following prose into a poem, without changing its core meaning or adding new scenarios:\n\n${inputText}`;
+                } else if (outputStyle === 'song') {
+                    prompt = `Transform the following prose into song lyrics, without changing its core meaning or adding new scenarios. Focus on rhythm and rhyme suitable for a song:\n\n${inputText}`;
+                } else if (outputStyle === 'quote') {
+                    if (wordCount > 200) {
+                        isValidInput = false;
+                        errorMessage = 'For a quote, please enter 200 words or less.';
+                    } else {
+                        prompt = `Condense the following text into a concise, impactful quote (1-2 sentences), preserving its core meaning:\n\n${inputText}`;
+                    }
+                } else if (outputStyle === 'essay') {
+                    if (wordCount < 200) {
+                        isValidInput = false;
+                        errorMessage = 'For an essay, please enter 200 words or more.';
+                    } else {
+                        prompt = `Expand the following text into a short essay, elaborating on its core meaning without introducing new scenarios. Aim for a coherent and well-structured piece:\n\n${inputText}`;
+                    }
+                } else if (outputStyle === 'shakespearean') {
+                    prompt = `Rewrite the following text in the style of William Shakespeare, using archaic language, poetic phrasing, and dramatic flair, but without changing its core meaning or adding new scenarios:\n\n${inputText}`;
+                } else if (outputStyle === 'summary') {
+                    prompt = `Provide a concise summary of the following text, capturing its main points and core meaning:\n\n${inputText}`;
+                }
+                else {
+                    isValidInput = false;
+                    errorMessage = 'Please select a valid output style.';
+                }
+
+                if (!isValidInput) {
+                    setErrorCreative(errorMessage);
+                    setIsLoadingCreative(false);
+                    return;
+                }
+
+                // Prepare the chat history for the API request
+                let chatHistory = [];
+                chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+
+                const payload = { contents: chatHistory };
+                // --- IMPORTANT: Your Google Cloud API Key for local testing ---
+                const apiKey = "AIzaSyA3uewnpVjG2dxwCgCNEyNBGeqk8cJP0ho";
+                // --- END IMPORTANT ---
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+
+                let retries = 0;
+                const maxRetries = 5;
+                const baseDelay = 1000; // 1 second
+
+                // Implement exponential backoff for API calls
+                while (retries < maxRetries) {
+                    try {
+                        const response = await fetch(apiUrl, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+
+                        if (!response.ok) {
+                            // If response is not OK, throw an error to trigger retry
+                            throw new Error(`HTTP error! status: ${response.status}`);
+                        }
+
+                        const result = await response.json();
+
+                        // Check if the response contains valid content
+                        if (result.candidates && result.candidates.length > 0 &&
+                            result.candidates[0].content && result.candidates[0].content.parts &&
+                            result.candidates[0].content.parts.length > 0) {
+                            const text = result.candidates[0].content.parts[0].text;
+                            setOutputText(text); // Set the transformed text
+                            // Add to history
+                            setCreativeHistory(prevHistory => [{
+                                input: inputText,
+                                output: text,
+                                style: outputStyle
+                            }, ...prevHistory].slice(0, 4)); // Keep only last 4
+                            break; // Exit loop on success
+                        } else {
+                            setErrorCreative('Failed to get a valid response from the model. Please try again.');
+                            break; // Exit loop if response structure is unexpected
+                        }
+                    } catch (e) {
+                        retries++;
+                        if (retries < maxRetries) {
+                            const delay = baseDelay * Math.pow(2, retries - 1); // Exponential delay
+                            await new Promise(res => setTimeout(res, delay));
+                        } else {
+                            setErrorCreative(`Error transforming text: ${e.message}. Please try again later.`);
+                        }
+                    }
+                }
+                setIsLoadingCreative(false); // Set loading to false
+            };
+
+
+            return (
+                <div className="min-h-screen bg-gray-100 flex flex-col sm:flex-row">
+                    {/* NEW: Render SplashScreen conditionally */}
+                    {showSplash && <SplashScreen onAnimationEnd={() => setShowSplash(false)} />}
+
+                    {/* Sidebar Navigation */}
+                    <div className="w-full sm:w-64 bg-gray-800 text-white flex flex-col p-4 space-y-4 shadow-lg">
+                        <h2 className="text-2xl font-bold mb-4 text-center font-inter">Lingo Morpher</h2>
+                        <button
+                            onClick={() => setActiveTab('creative')}
+                            className={`w-full text-left px-4 py-2 rounded-lg transition duration-200 ease-in-out font-inter ${activeTab === 'creative' ? 'bg-blue-600 hover:bg-blue-700 shadow-md' : 'hover:bg-gray-700'}`}
+                        >
+                            Creative Translator
+                        </button>
+                        <button
+                            onClick={() => setActiveTab('language')}
+                            className={`w-full text-left px-4 py-2 rounded-lg transition duration-200 ease-in-out font-inter ${activeTab === 'language' ? 'bg-blue-600 hover:bg-blue-700 shadow-md' : 'hover:bg-gray-700'}`}
+                        >
+                            Language Translator
+                        </button>
+                        <button
+                            onClick={() => setActiveTab('tone')}
+                            className={`w-full text-left px-4 py-2 rounded-lg transition duration-200 ease-in-out font-inter ${activeTab === 'tone' ? 'bg-blue-600 hover:bg-blue-700 shadow-md' : 'hover:bg-gray-700'}`}
+                        >
+                            Tone Adjuster
+                        </button>
+                    </div>
+
+                    {/* Main Content Area - Renders based on activeTab */}
+                    <div className="flex-1 flex items-center justify-center p-4 sm:p-6 lg:p-8">
+                        {activeTab === 'creative' ? (
+                            // Creative Translator Section
+                            <div className="bg-white p-6 sm:p-8 rounded-xl shadow-lg w-full max-w-4xl border border-gray-200">
+                                <h1 className="text-3xl sm:text-4xl font-extrabold text-center text-gray-800 mb-6 font-inter">
+                                    Creative Translator
+                                </h1>
+                                <p className="text-center text-gray-600 mb-8 font-inter">
+                                    Enter your prose below and transform it into a poem, song lyrics, quote, essay, or change its formality!
+                                </p>
+
+                                {/* Input Section */}
+                                <div className="mb-6">
+                                    <label htmlFor="inputText" className="block text-lg font-medium text-gray-700 mb-2 font-inter">
+                                        Your Prose:
+                                    </label>
+                                    <textarea
+                                        id="inputText"
+                                        className="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition duration-200 ease-in-out resize-y min-h-[120px] font-inter"
+                                        placeholder="Type or paste your text here..."
+                                        value={inputText}
+                                        onChange={(e) => setInputText(e.target.value)}
+                                        rows="6"
+                                    ></textarea>
+                                </div>
+
+                                {/* Style Selection and Transform Button */}
+                                <div className="flex flex-col sm:flex-row items-center justify-between mb-8 space-y-4 sm:space-y-0 sm:space-x-4">
+                                    <div className="w-full sm:w-auto">
+                                        <label htmlFor="outputStyle" className="block text-lg font-medium text-gray-700 mb-2 font-inter">
+                                            Choose Style:
+                                        </label>
+                                        <select
+                                            id="outputStyle"
+                                            className="w-full sm:w-48 p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition duration-200 ease-in-out bg-white font-inter"
+                                            value={outputStyle}
+                                            onChange={(e) => setOutputStyle(e.target.value)}
+                                        >
+                                            <option value="poem">Poem</option>
+                                            <option value="song">Song Lyrics</option>
+                                            <option value="quote">Quote (Max 200 words)</option>
+                                            <option value="essay">Essay (Min 200 words)</option>
+                                            <option value="shakespearean">Shakespearean</option>
+                                            <option value="summary">Summary</option>
+                                        </select>
+                                    </div>
+                                    <button
+                                        onClick={handleCreativeTransform}
+                                        className="w-full sm:w-auto px-6 py-3 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition duration-300 ease-in-out transform hover:scale-105 font-inter"
+                                        disabled={isLoadingCreative || !inputText.trim()} // Disable if loading or input is empty
+                                    >
+                                        {isLoadingCreative ? (
+                                            <span className="flex items-center justify-center">
+                                                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                </svg>
+                                                Transforming...
+                                            </span>
+                                        ) : (
+                                            'Transform Text'
+                                        )}
+                                    </button>
+                                </div>
+
+                                {/* Error Display */}
+                                {errorCreative && (
+                                    <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg relative mb-6 font-inter" role="alert">
+                                        <strong className="font-bold">Error!</strong>
+                                        <span className="block sm:inline ml-2">{errorCreative}</span>
+                                    </div>
+                                )}
+
+                                {/* Output Section */}
+                                {outputText && (
+                                    <div className="bg-gray-50 p-4 sm:p-6 rounded-lg border border-gray-200">
+                                        <h2 className="text-xl sm:text-2xl font-bold text-gray-800 mb-4 font-inter">
+                                            Transformed Text:
+                                        </h2>
+                                        <div className="whitespace-pre-wrap text-gray-800 leading-relaxed font-inter">
+                                            {outputText}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Creative Translator History Section - ALWAYS VISIBLE */}
+                                <div className="mt-8 pt-6 border-t border-gray-200">
+                                    <h3 className="text-xl font-bold text-gray-800 mb-4 font-inter flex justify-between items-center">
+                                        Recent Creative Conversions
+                                        <button
+                                            onClick={() => setCreativeHistory([])}
+                                            className="text-sm text-red-600 hover:text-red-800 font-semibold"
+                                        >
+                                            Clear History
+                                        </button>
+                                    </h3>
+                                    {creativeHistory.length > 0 ? (
+                                        <div className="space-y-4">
+                                            {creativeHistory.map((entry, index) => (
+                                                <div key={index} className="bg-white p-4 rounded-lg shadow-sm border border-gray-100">
+                                                    <p className="text-sm text-gray-500 font-medium mb-2">
+                                                        <span className="font-semibold">Style:</span> {entry.style}
+                                                    </p>
+                                                    <p className="text-gray-700 mb-1">
+                                                        <span className="font-semibold">Input:</span> {entry.input.substring(0, 100)}{entry.input.length > 100 ? '...' : ''}
+                                                    </p>
+                                                    <p className="text-gray-800">
+                                                        <span className="font-semibold">Output:</span> {entry.output.substring(0, 100)}{entry.output.length > 100 ? '...' : ''}
+                                                    </p>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <p className="text-gray-500 text-center italic font-inter">No recent creative conversions.</p>
+                                    )}
+                                </div>
+                            </div>
+                        ) : activeTab === 'language' ? (
+                            // Language Translator Section
+                            <LanguageTranslator />
+                        ) : (
+                            // Tone Adjuster Section
+                            <ToneAdjuster />
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        // Render the main App component into the root div of the HTML document
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
